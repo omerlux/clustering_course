@@ -186,150 +186,181 @@ def split_dataset(dataset, test_size=0.2):
 #%% md
 # Assignment #2
 #%%
-class UOFC:
-    def __init__(self, n_clusters, init_method='random'):
-        self.n_clusters = n_clusters
-        self.init_method = init_method
-        self.prototypes = None
-        self.max_iter = 1000
+class WFKM:
+    def __init__(self, X, P, K, max_K):
+        self.M = len(X)         # number of data points
+        self.u = np.zeros((self.M, K))    # membership matrix
+        self.K = K              # number of prototypes = CLUSTERS
+        self.max_K = max_K
+        self.X = X
+        self.P = P.copy()
 
-    def _init_prototypes(self, data):
-        if self.init_method == 'random':
-            # Initialize prototypes randomly from the data points
-            prototypes = data[np.random.choice(data.shape[0], self.n_clusters, replace=False), :]
-        elif self.init_method == 'kmeans':
-            # Initialize prototypes using K-means
-            # initiate the prototypes with k-mean from sklearn:
-            prototypes = KMeans(n_clusters=self.n_clusters, init='random', max_iter=1, n_init=1).fit(data).cluster_centers_
-            # prototypes = self._kmeans(data)
+    def find_prototypes(self, max_iter=100):
+        # X is the data matrix
+        # K is the number of prototypes
+        # P is the previous centers (prototypes) matrix - length K
+        iter = 0
+        u_prev = None
+        eps = 0.01
+
+        for iter in tqdm(range(max_iter)):
+            self.iter = iter
+            u_prev = self.u.copy()
+
+            # calculate membership matrix u
+            self.u = self._memberships(self.X, self.P)
+
+            # # calculate membership matrix u
+            # for k in range(self.K):
+            #     for i in range(self.M):
+            #         self.u[k, i] = self._memberships(self.X[i], self.P, k)
+
+            self.P = np.array([np.sum((self.u[:, k] ** 2)[:, None] * self.X, axis=0)
+                               / np.sum(self.u[:, k] ** 2) for k in range(self.K)])
+
+            # break if the condition is met
+            if not self.cond(self.u, u_prev, eps):
+                break
+
+        self.D = self.distances(self.X, self.P)
+
+        return self.P, self.u, self.D
+
+    # def _memberships(self, _x_i, _P, k):
+    #     d_inverse = self._inverse_distance(_x_i, _P[k], k)
+    #     u_k_i = d_inverse / np.sum([self._inverse_distance(_x_i, _P[j], k) for j in range(len(_P))])
+    #     return u_k_i
+    def _memberships(self, X, P):
+        # Compute inverse distances for all pairs of data points and prototypes
+        d_inverse = self._inverse_distance(X, P)
+
+        # Compute memberships for each data point to each prototype
+        u = d_inverse / np.sum(d_inverse, axis=1)[:, None]
+
+        return u
+
+    # def _inverse_distance(self, _x_i, _p_k, k):
+    #     if self.iter == 0 or self.K == self.max_K:
+    #         d = 10 * np.trace(np.cov(self.X))
+    #     else:
+    #         d = (_p_k - _x_i).T @ (_p_k - _x_i)
+    #     # exponential?
+    #     return 1 / d
+    def _inverse_distance(self, X, P):
+        if self.iter == 0 and self.K == self.max_K:
+            d = 10 * np.trace(np.cov(self.X)) * np.ones((len(X), len(P)))
         else:
-            raise ValueError(f"Unknown init_method: {self.init_method}")
-        return prototypes
+            # Compute squared Euclidean distances for all pairs of data points and prototypes
+            diff = X[:, None, :] - P[None, :, :] # M x K x F
+            d = np.sum(diff ** 2, axis=2)   # sum on the axis of features
+        return 1 / (d + 1e-8)
 
-    def _F_calculate(self, X, prototypes=None, memberships=None):
-        if prototypes is None:
-            prototypes = self.prototypes
-        if memberships is None:
-            memberships = self._memberships(X, prototypes)
+    # def distances(self, X, P):
+    #     return (P - X) @ (P - X).T
+    def distances(self, X, P):
+        return np.sum((P[None, :, :] - X[:, None, :]) ** 2, axis=-1)
+
+
+    def cond(self, u, u_prev, eps=0.01):
+        if u_prev is None:
+            return True
+        else:
+            return np.linalg.norm(u - u_prev) > eps
+
+
+class WUOFC:
+    def __init__(self, ):
+        pass
+
+    def fit(self, X, max_K):
+        metrics = {}
+        clustering = {}
+
+        P_init = X.mean(axis=0)[None, :]
+        for K in range(1, max_K+1):
+            print(f'Cluster size - K = {K}')
+            # init wfkm with K clusters
+            wfkm = WFKM(X, P_init, K, max_K=max_K)
+            # find prototypes
+            P, U, D = wfkm.find_prototypes(max_iter=100)
+
+            # calculate metrics
+            metrics[K] = self.metrics(X, P, U, D, K)
+            clustering[K] = self.predict(U)
+
+            # creating the new center
+            P_init = np.concatenate((P_init,
+                                     np.array(X[np.unravel_index(U.argmin(), U.shape)[1]])[None, :]))
+
+        return metrics, clustering
+
+    def predict(self, U):
+        return np.argmax(U, axis=1)
+
+    def _F_calculate(self, U, X, P):
         # Compute F for each data point and each cluster
         # Reshape X, prototypes, and memberships to allow broadcasting
         X_reshaped = X[:, None, :]
-        prototypes_reshaped = prototypes[None, :, :]
-        memberships_reshaped = memberships[:, :, None, None]
+        P_reshaped = P[None, :, :]
+        U_reshaped = U[:, :, None, None]
 
         # Compute the difference and outer product for each pair of data point and prototype
-        diff = (prototypes_reshaped - X_reshaped)[:, :, :, None]
+        diff = (P_reshaped - X_reshaped)[:, :, :, None]
         F_k = diff @ diff.transpose(0, 1, 3, 2)
 
         # Compute the weighted sum of F_k for each cluster
-        F = np.sum(memberships_reshaped * F_k, axis=0)
+        F = np.sum(U_reshaped * F_k, axis=0)
 
         # Compute the sum of memberships for each cluster
-        sum_dominator_k = memberships.sum(axis=0)
+        sum_dominator_k = U.sum(axis=0)
 
         # Normalize F by the sum of memberships
         F /= sum_dominator_k[:, None, None]
 
         return F
 
-    def _distances(self, X, prototypes=None, memberships=None):
-        if prototypes is None:
-            prototypes = self.prototypes
-        if memberships is None:
-            memberships = self._memberships(X, prototypes)
-        F = self._F_calculate(X, prototypes, memberships)
-        distances = np.zeros((self.n_clusters, X.shape[0]))
-        for k in range(self.n_clusters):
-            a_k = self._memberships(X)[:, k].sum()
-            for i in range(X.shape[0]):
-                distances[k, i] = ((np.linalg.det(F[k]) ** (1/2)) / a_k) * np.exp(
-                    (prototypes[k] - X[i])[:, None].T @ (F[k] ** (-1)) @ (prototypes[k] - X[i])[:, None] / 2
-                )
-        return distances
+    def hv(self, F):
+        # fuzzy_hypercube_criteria
+        return np.sqrt(np.linalg.det(F)).sum(axis=0)
 
-    def _memberships(self, data, prototypes=None):
-        if prototypes is None:
-            prototypes = self.prototypes
+    def pd(self, F, U):
+        # partition_density_criteria
+        return U.sum(axis=0).sum(axis=0) / self.hv(F)
 
-        # Compute memberships for each data point to each cluster
-        # Reshape data and prototypes to allow broadcasting
-        data_reshaped = data[:, None, :]
-        prototypes_reshaped = prototypes[None, :, :]
+    def apd_central(self, F, U):
+        # average_partition_density_central_criteria
+        return (U.sum(axis=0) / np.sqrt(np.linalg.det(F))).mean(axis=0)
 
-        # Compute the distance for each data point to each prototype
-        diff = data_reshaped - prototypes_reshaped
-        memberships = np.einsum('ijk,ijk->ij', diff, diff)  # equivalent to summing over the last axis of diff**2
+    def apd_max(self, F, U, K):
+        # average_partition_density_max_criteria
+        U_max = []
+        for k in range(K):
+            argmax_indices = np.argmax(U, axis=1) == k
+            U_max.append(U[argmax_indices][:, k].sum(axis=0))
+        U_max = np.array(U_max)
+        return (U_max / np.sqrt(np.linalg.det(F))).mean(axis=0)
 
-        # Apply the same transformations as in the original function
-        m = np.clip(1 / memberships, a_min=-1, a_max=100000)
-        m = m / m.sum(axis=1)[:, None]
-        return m
+    def np(self, U, D, K):
+        # normalized_partition_criteria
+        # return (U ** 2 * D.T).sum() * K       # TODO: check it - i've changed it
+        return np.einsum('mk,mk->k', D ** 2, U).sum() * K
 
-    def fit(self, data, max_iter=1000):
-        self.max_iter = max_iter
-        # Initialize classification prototypes
-        self.prototypes = self._init_prototypes(data)
+    def metrics(self,X, P, U, D, K):
+        F = self._F_calculate(U, X, P)
+        return {
+            'hv': self.hv(F),
+            'pd': self.pd(F, U),
+            'apd_central': self.apd_central(F, U),
+            'apd_max': self.apd_max(F, U, K),
+            'np': self.np(U, D, K)
+        }
 
-        for i in tqdm(range(self.max_iter)):
-            # Step 1: Cluster data using fuzzy K-means with current prototypes
-            # Compute memberships for each data point to each cluster
-            memberships = self._memberships(data)
 
-            # Step 2: Refine prototypes using fuzzy maximum likelihood estimation
-            new_prototypes = np.dot(memberships.T ** 2, data) / (memberships ** 2).sum(axis=0, keepdims=True).T
-
-            # Check for convergence
-            if np.allclose(self.prototypes, new_prototypes, atol=1e-2, rtol=1e-2):
-                break
-
-            self.prototypes = new_prototypes
-
-    def predict(self, data):
-        # Assign each data point to the cluster with the highest membership
-        distances = self._distances(data)
-        return np.argmax(distances, axis=0)
-
-    def fuzzy_hypercube_criteria(self, X):
-        F = self._F_calculate(X)
-        hv = np.sqrt(np.linalg.det(F)).sum(axis=0)
-        return hv
-
-    def partition_density_criteria(self, X):
-        memberships = self._memberships(X)
-        pd = memberships.sum(axis=0).sum(axis=0) / self.fuzzy_hypercube_criteria(X)
-        return pd
-
-    def average_partition_density_central_criteria(self, X):
-        F = self._F_calculate(X)
-        memberships = self._memberships(X)
-        apd = (memberships.sum(axis=0) / np.sqrt(np.linalg.det(F))).mean(axis=0)
-        return apd
-
-    def average_partition_density_max_criteria(self, X):
-        F = self._F_calculate(X)
-        memberships = self._memberships(X)
-        membership_max = []
-        for k in range(self.n_clusters):
-            argmax_indices = np.argmax(memberships, axis=1) == k
-            membership_max.append(memberships[argmax_indices][:, k].sum(axis=0))
-        membership_max = np.array(membership_max)
-        apd = (membership_max / np.sqrt(np.linalg.det(F))).mean(axis=0)
-        return apd
-
-    def normalized_partition_criteria(self, X):
-        memberships = self._memberships(X)
-        distances = self._distances(X)
-        return (memberships ** 2 * distances.T).sum()
-
-#%% md
-### Fitting the model
-#%%
 train_predictions = {}
 train_gt = {}
 
-init_methods = ['random', 'kmeans']
-datasets = ['lines']
-num_of_groups = [4]
+datasets = ['lines'] # ['random', 'triangle', 'square', 'lines', 'star']
+max_clusters = 7
 
 for dataset_name in datasets:
     print('=' * 50)
@@ -337,197 +368,12 @@ for dataset_name in datasets:
     dataset = pd.read_csv(f"dataset_{dataset_name}.csv")
     X_train, y_train = split_dataset(dataset, test_size=0)
 
-    train_predictions[dataset_name] = {method: {} for method in init_methods}
+    train_predictions[dataset_name] = {}
     train_gt[dataset_name] = y_train
-    for init_method in init_methods:  # number of times to fit the model
-        print('-'* 25)
-        for n_groups in num_of_groups:  # number of clusters
-            print("Fitting model with init_method: ", init_method, " and n_groups: ", n_groups)
-            uofc = UOFC(n_clusters=n_groups, init_method=init_method)  # Initialize the UOFC
-            uofc.fit(X_train)
-            y_train_pred = uofc.predict(X_train)
-            train_predictions[dataset_name][init_method][n_groups] = {'y_pred': y_train_pred, 'model': uofc}
-#%% md
-### Visualizing the results
-#%%
-for dataset_name in train_predictions.keys():
-    init_methods = list(train_predictions[dataset_name].keys())
-    dataset = pd.read_csv(f"dataset_{dataset_name}.csv")
-    feat0 = dataset["feature_0"]
-    feat1 = dataset["feature_1"]
-    n_groups = list(train_predictions[dataset_name][init_methods[0]].keys())
-    for method in init_methods:
-        fig, axs = plt.subplots(1, 1 + len(n_groups), figsize=(22,4))
-        axs[0].scatter(feat0, feat1, c=train_gt[dataset_name], cmap='viridis')
-        axs[0].set_title("True labels")
-        for i, n_group in enumerate(n_groups, 1):
-            axs[i].scatter(feat0, feat1, c=train_predictions[dataset_name][method][n_group]['y_pred'], s=50, cmap='tab20')
-            axs[i].set_title(f"Predicted labels\nInit {method} | {n_group} Clusters - ")
-        fig.suptitle(f'Dataset {dataset_name}', y=1.1)
-        plt.show()
 
-#%% md
-### Evaluating the results by 6 criteria
-#%%
-method = 'random'
-dataset_name = 'random'
-n_groups = 3
+    print('Fitting the model with max clusters of ', max_clusters)
+    woufc = WUOFC()   # Initialize the WOUFC
+    metrics, clustering = woufc.fit(X_train, max_K=max_clusters)
 
-X = pd.read_csv(f"dataset_{dataset_name}.csv")
-X = X[X.columns.drop('label')]
-y_pred = train_predictions[dataset_name][method][n_groups]['y_pred']
-uofc = train_predictions[dataset_name][method][n_groups]['model']
-
-#%%
-X.shape
-#%%
-y_pred.shape
-#%%
-prototypes = uofc.prototypes
-prototypes.shape
-#%%
-memberships = uofc._memberships(X.values)
-memberships.shape
-#%%
-F = uofc._F_calculate(X.values)
-F
-#%%
-distances = np.zeros((n_groups, X.shape[0]))
-for k in range(n_groups):
-    a_k = uofc._memberships(X.values)[:, k].sum()
-    for i in range(X.shape[0]):
-        distances[k, i] = ((np.linalg.det(F[k]) ** (1/2)) / a_k) * np.exp(
-            (prototypes[k] - X.values[i])[:, None].T @ (F[k] ** (-1)) @ (prototypes[k] - X.values[i])[:, None] / 2
-        )
-#%%
-distances.argmax(axis=0)
-#%% md
-
-#%% md
-
-# #%%
-# def fuzzy_hypercube_criteria(X, y_pred):
-#     K = np.unique(y_pred).shape[0]  # Number of clusters
-#     V_HV = 0  # Initialize hypervolume
-#     for k in range(K):
-#         # Select data points in kth cluster
-#         X_k = X[y_pred == k]
-#         # Compute covariance matrix
-#         F_k = np.cov(X_k, rowvar=False)
-#         # Compute hypervolume of kth cluster
-#         h_k = np.sqrt(np.linalg.det(F_k))
-#         # Add to total hypervolume
-#         V_HV += h_k
-#     return V_HV
-#
-# def partition_density_criteria(X, y_pred, memberships):
-#     K = np.unique(y_pred).shape[0]  # Number of clusters
-#     V_PD = 0  # Initialize partition density
-#     h_sum = 0  # Initialize sum of hypervolumes
-#     for k in range(K):
-#         # Select data points in kth cluster
-#         X_k = X[y_pred == k]
-#         # Compute covariance matrix and its inverse
-#         F_k = np.cov(X_k, rowvar=False)
-#         G_k = np.linalg.inv(F_k)
-#         # Compute centroid of kth cluster
-#         p_k = X_k.mean(axis=0)
-#         # Compute memberships of "central members"
-#         I_k = ((X_k - p_k) @ G_k * (p_k - X_k)).sum(axis=1) < 1
-#         C_k = memberships[y_pred == k][I_k].sum()
-#         # Compute hypervolume of kth cluster
-#         h_k = np.sqrt(np.linalg.det(F_k))
-#         # Add to total partition density and sum of hypervolumes
-#         V_PD += C_k
-#         h_sum += h_k
-#     return V_PD / h_sum
-#
-# def average_partition_density_central_members_criteria(X, y_pred, memberships):
-#     K = np.unique(y_pred).shape[0]  # Number of clusters
-#     V_AD = 0  # Initialize average partition density
-#     for k in range(K):
-#         # Select data points in kth cluster
-#         X_k = X[y_pred == k]
-#         # Compute covariance matrix and its inverse
-#         F_k = np.cov(X_k, rowvar=False)
-#         G_k = np.linalg.inv(F_k)
-#         # Compute centroid of kth cluster
-#         p_k = X_k.mean(axis=0)
-#         # Compute memberships of "central members"
-#         I_k = ((X_k - p_k) @ G_k * (p_k - X_k)).sum(axis=1) < 1
-#         C_k = memberships[y_pred == k][I_k].sum()
-#         # Compute hypervolume of kth cluster
-#         h_k = np.sqrt(np.linalg.det(F_k))
-#         # Add to total average partition density
-#         V_AD += C_k / h_k
-#     return V_AD / K
-
-# def average_partition_density_maximal_members_criteria(X, y, y_pred):
-# #
-# # def normalized_by_k_partition_indexes_criteria(X, y, y_pred):
-# #
-# # def invariant_criteria(X, y, y_pred):
-# #%% md
-# ### Evaluating the results by 6 criteria
-# #%%
-# def fuzzy_hypercube_criteria(X, y_pred):
-#     K = np.unique(y_pred).shape[0]  # Number of clusters
-#     V_HV = 0  # Initialize hypervolume
-#     for k in range(K):
-#         # Select data points in kth cluster
-#         X_k = X[y_pred == k]
-#         # Compute covariance matrix
-#         F_k = np.cov(X_k, rowvar=False)
-#         # Compute hypervolume of kth cluster
-#         h_k = np.sqrt(np.linalg.det(F_k))
-#         # Add to total hypervolume
-#         V_HV += h_k
-#     return V_HV
-#
-# def partition_density_criteria(X, y_pred, memberships):
-#     K = np.unique(y_pred).shape[0]  # Number of clusters
-#     V_PD = 0  # Initialize partition density
-#     h_sum = 0  # Initialize sum of hypervolumes
-#     for k in range(K):
-#         # Select data points in kth cluster
-#         X_k = X[y_pred == k]
-#         # Compute covariance matrix and its inverse
-#         F_k = np.cov(X_k, rowvar=False)
-#         G_k = np.linalg.inv(F_k)
-#         # Compute centroid of kth cluster
-#         p_k = X_k.mean(axis=0)
-#         # Compute memberships of "central members"
-#         I_k = ((X_k - p_k) @ G_k * (p_k - X_k)).sum(axis=1) < 1
-#         C_k = memberships[y_pred == k][I_k].sum()
-#         # Compute hypervolume of kth cluster
-#         h_k = np.sqrt(np.linalg.det(F_k))
-#         # Add to total partition density and sum of hypervolumes
-#         V_PD += C_k
-#         h_sum += h_k
-#     return V_PD / h_sum
-#
-# def average_partition_density_central_members_criteria(X, y_pred, memberships):
-#     K = np.unique(y_pred).shape[0]  # Number of clusters
-#     V_AD = 0  # Initialize average partition density
-#     for k in range(K):
-#         # Select data points in kth cluster
-#         X_k = X[y_pred == k]
-#         # Compute covariance matrix and its inverse
-#         F_k = np.cov(X_k, rowvar=False)
-#         G_k = np.linalg.inv(F_k)
-#         # Compute centroid of kth cluster
-#         p_k = X_k.mean(axis=0)
-#         # Compute memberships of "central members"
-#         I_k = ((X_k - p_k) @ G_k * (p_k - X_k)).sum(axis=1) < 1
-#         C_k = memberships[y_pred == k][I_k].sum()
-#         # Compute hypervolume of kth cluster
-#         h_k = np.sqrt(np.linalg.det(F_k))
-#         # Add to total average partition density
-#         V_AD += C_k / h_k
-#     return V_AD / K
-#
-# def average_partition_density_maximal_members_criteria(X, y, y_pred):
-#
-# def normalized_by_k_partition_indexes_criteria(X, y, y_pred):
-#
-# def invariant_criteria(X, y, y_pred):
+    # y_train_pred = uofc.predict(X_train)
+    # train_predictions[dataset_name][init_method][n_groups] = {'y_pred': y_train_pred, 'model': uofc}
