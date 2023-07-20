@@ -209,8 +209,6 @@ class WFKM:
             for k in range(self.K):
                 inverse_d_K_len = self._inverse_distances(k)
                 self.u[:, k] = inverse_d_K_len[:, k] / inverse_d_K_len.sum(axis=-1)
-                # for i in range(self.M):
-                #     self.u[i, k] = self._membership(self.X[i], self.P, k)
 
             self.P = np.array([np.sum((self.u[:, k] ** 2)[:, None] * self.X, axis=0)
                                / np.sum(self.u[:, k] ** 2) for k in range(self.K)])
@@ -361,42 +359,239 @@ class WUOFC:
         }
 
 
+# train_predictions = {}
+# train_gt = {}
+#
+# datasets = ['lines'] # ['random', 'triangle', 'square', 'lines', 'star']
+# max_clusters = 3
+#
+# for dataset_name in datasets:
+#     print('=' * 50)
+#     print("Working on dataset: ", dataset_name)
+#     dataset = pd.read_csv(f"dataset_{dataset_name}.csv")
+#     X_train, y_train = split_dataset(dataset, test_size=0)
+#
+#     train_predictions[dataset_name] = {}
+#     train_gt[dataset_name] = y_train
+#
+#     print('Fitting the model with max clusters of ', max_clusters)
+#     woufc = WUOFC()   # Initialize the WOUFC
+#     metrics, clustering = woufc.fit(X_train, max_K=max_clusters)
+#
+#     train_predictions[dataset_name]['metrics'] = metrics
+#     train_predictions[dataset_name]['pred'] = clustering
+#     train_predictions[dataset_name]['model'] = woufc
+#
+#
+# for dataset_name in train_predictions.keys():
+#     init_methods = list(train_predictions[dataset_name].keys())
+#     dataset = pd.read_csv(f"dataset_{dataset_name}.csv")
+#     feat0 = dataset["feature_0"]
+#     feat1 = dataset["feature_1"]
+#     n_clusters = [k for k in train_predictions[dataset_name]['pred'].keys() if type(k) == int]
+#     fig, axs = plt.subplots(1, 1 + len(n_clusters), figsize=(22,4))
+#     axs[0].scatter(feat0, feat1, c=train_gt[dataset_name], cmap='viridis')
+#     axs[0].set_title("True labels")
+#     for i, n_cluster in enumerate(n_clusters, 1):
+#         axs[i].scatter(feat0, feat1, c=train_predictions[dataset_name]['pred'][n_cluster], s=50, cmap='tab20')
+#         axs[i].set_title(f"Predicted labels\n{n_cluster} Clusters - ")
+#     fig.suptitle(f'Dataset {dataset_name}', y=1.1)
+#     plt.show()
+
+
+from scipy.spatial import distance_matrix
+
+
+# Two lines with three Gaussians each
+n_samples = 100
+dim = 2
+priors = [1/6]*6  # Six Gaussians in total
+n_groups = len(priors)
+
+# Define the means along two lines
+means = [np.array([2*i, 2*i]) for i in range(3)] + [np.array([2*i, 6-2*i]) for i in range(3)]
+
+# Define the covariance matrices
+# We can make the clusters more elongated along the lines by making one of the eigenvalues much larger than the other.
+covs = [np.array([[0.1, 0], [0, 0.5+i/10]]) for i in range(3)] + [np.array([[0.5+i/10, 0], [0, 0.1]]) for i in range(3)]
+
+# Generate the Gaussian groups
+dataset_lines_small = generate_gaussian_groups(n_groups, n_samples, dim, priors=priors, means=means, covs=covs)
+
+print("Sample data lines:")
+print(dataset_lines_small.head())
+
+# Plot each group and color it differently
+plot_gaussian_groups(dataset_lines_small)
+
+# Save the DataFrame to a CSV file
+dataset_lines_small.to_csv('dataset_lines_small.csv', index=False)
+
+
+
+
+
+def cdist(D_i, D_j, type='euclidean'):
+    if type == 'euclidean':
+        return distance_matrix(D_i, D_j)
+    else:
+        raise NotImplemented
+
+def distances(D_i, D_j, mode='d_min'): #distnces from p.54 + p.56
+    if mode == 'd_mean':
+        return np.linalg.norm(np.mean(D_i, axis=0) - np.mean(D_j, axis=0))
+    elif mode == 'd_e':
+        n_i = len(D_i)
+        n_j = len(D_j)
+        return np.sqrt((n_i * n_j) / n_i + n_j) * np.linalg.norm(np.mean(D_i, axis=0) - np.mean(D_j, axis=0))
+
+    else:
+        distance_matrix = cdist(D_i, D_j, 'euclidean')
+
+        if mode == 'd_min':
+            return np.min(distance_matrix)
+        elif mode == 'd_max':
+            return np.max(distance_matrix)
+        elif mode == 'd_avg':
+            return np.sum(distance_matrix) / (len(D_i) * len(D_j))
+
+
+def ah_clustering(X, n_clusters, dis_mode, dis_max=-1): #algorithm from p.54
+    n = X.shape[0]  # Number of data points
+    c_hat = n  # Initial number of clusters
+    clusters = [[i] for i in range(n)]  # Initialize each data point as a separate cluster
+
+    if n_clusters == None: #number of clusters if unknown:
+        n_clusters = 1
+    nearest_distance = None
+
+    while c_hat > n_clusters:
+        if c_hat % 10 == 0:
+            print(f"ֿ\t\tnumber of clusters to aggregate - {c_hat}")
+            print(f"\t\tnearest distance is - {nearest_distance}")
+        nearest_distance = np.inf
+        nearest_i = None
+        nearest_j = None
+
+        # Find the nearest clusters
+        for i in range(c_hat):
+            for j in range(i + 1, c_hat):
+                distance = distances(X[clusters[i]], X[clusters[j]], mode=dis_mode)
+                if distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest_i = i
+                    nearest_j = j
+
+        if n_clusters == 1 and nearest_distance > dis_max: #number of clusters is unknown
+            print(f"\t\tstopped at {c_hat} clusters with distance {nearest_distance}")
+            break
+
+        # Merge the nearest clusters
+        clusters[nearest_i] += clusters[nearest_j]
+        del clusters[nearest_j]
+        c_hat -= 1
+
+    total_elements = sum([len(cluster) for cluster in clusters])
+    labels = np.zeros(total_elements)
+
+    # Fill the labels list
+    for i, cluster in enumerate(clusters):
+        labels[cluster] = i
+
+    return labels
+
+
+def so_clustering(X, n_clusters, dis_mode, change_max=-1): # algorithm from p.56
+    n = X.shape[0]  # Number of data points
+    c_hat = n  # Initial number of clusters
+    clusters = [[i] for i in range(n)]  # Initialize each data point as a separate cluster
+
+    if n_clusters == None: #number of clusters if unknown:
+        n_clusters = 1
+
+    while c_hat > n_clusters:
+        min_change = np.inf
+        nearest_i = None
+        nearest_j = None
+
+        # Find clusters whose merger changes the criterion the least
+        for i in range(c_hat):
+            for j in range(i + 1, c_hat):
+                criterion_change = compute_criterion_change(X[clusters[i]], X[clusters[j]])
+                if criterion_change < min_change:
+                    min_change = criterion_change
+                    nearest_i = i
+                    nearest_j = j
+
+        if c_hat == 1 and min_change > change_max: #number of clusters is unknown
+            break
+
+        # Merge the clusters with the least criterion change
+        clusters[nearest_i] += clusters[nearest_j]
+        del clusters[nearest_j]
+        c_hat -= 1
+
+    return clusters
+
+
+def compute_criterion_change(Di, Dj):
+
+    return 0
+
+
+
 train_predictions = {}
 train_gt = {}
+dis_max = 1.1      # tol to stop Agglomerative hierarchical
+change_max = 0.01   # tol to stop Stepwise optimal hierarchical
 
-datasets = ['lines'] # ['random', 'triangle', 'square', 'lines', 'star']
-max_clusters = 3
+datasets = ['lines_small'] # 'random' , 'triangle', 'square', 'lines', 'star']
 
 for dataset_name in datasets:
     print('=' * 50)
     print("Working on dataset: ", dataset_name)
     dataset = pd.read_csv(f"dataset_{dataset_name}.csv")
     X_train, y_train = split_dataset(dataset, test_size=0)
-
+    n_clusters = len(set(y_train))
     train_predictions[dataset_name] = {}
     train_gt[dataset_name] = y_train
 
-    print('Fitting the model with max clusters of ', max_clusters)
-    woufc = WUOFC()   # Initialize the WOUFC
-    metrics, clustering = woufc.fit(X_train, max_K=max_clusters)
+    for known_num_of_clusters in [None, n_clusters]:
+        print(f"\tKnowning the number of clusters - {known_num_of_clusters}")
+        train_predictions[dataset_name][str(known_num_of_clusters)] = {}
+        for dist_mode in ['d_min', 'd_max']: # , 'd_avg', 'd_mean', 'd_e']:
+            print('-'*50)
+            print(f"\tDistance mode - {dist_mode}")
+            # Agglomerative hierarchical clustering
+            ah_clusters = ah_clustering(X=X_train, n_clusters=known_num_of_clusters, dis_mode=dist_mode, dis_max=dis_max)
+            ah_acc = metrics.rand_score(labels_true=y_train, labels_pred=ah_clusters)
 
-    train_predictions[dataset_name]['metrics'] = metrics
-    train_predictions[dataset_name]['pred'] = clustering
-    train_predictions[dataset_name]['model'] = woufc
+            train_predictions[dataset_name][str(known_num_of_clusters)][dist_mode] = {}
+            train_predictions[dataset_name][str(known_num_of_clusters)][dist_mode]['ah_pred'] = ah_clusters
+            train_predictions[dataset_name][str(known_num_of_clusters)][dist_mode]['ah_acc'] = ah_acc
+
+            # Stepwise optimal hierarchical clustering
+            # so_clusters = so_clustering(X=X_train,n_clusters=known_num_of_clusters,dis_mode=dist_mode, change_max=change_max)
+            # so_acc = metrics.rand_score(labels_true=train_gt, labels_pred=so_clusters)
+            so_acc = 0
+            print(f'For {known_num_of_clusters} known clusters and dist_mode={dist_mode} - AHC: { ah_acc:.2%}, SOC: {so_acc :.2%}')
+
+    print('done')
 
 
 for dataset_name in train_predictions.keys():
-    init_methods = list(train_predictions[dataset_name].keys())
     dataset = pd.read_csv(f"dataset_{dataset_name}.csv")
     feat0 = dataset["feature_0"]
     feat1 = dataset["feature_1"]
-    n_clusters = [k for k in train_predictions[dataset_name]['pred'].keys() if type(k) == int]
-    fig, axs = plt.subplots(1, 1 + len(n_clusters), figsize=(22,4))
+    n_plots = len(train_predictions[dataset_name].keys()) * len(train_predictions[dataset_name]['None'].keys())
+    fig, axs = plt.subplots(1, 1 + n_plots, figsize=(22, 4))
     axs[0].scatter(feat0, feat1, c=train_gt[dataset_name], cmap='viridis')
     axs[0].set_title("True labels")
-    for i, n_cluster in enumerate(n_clusters, 1):
-        axs[i].scatter(feat0, feat1, c=train_predictions[dataset_name]['pred'][n_cluster], s=50, cmap='tab20')
-        axs[i].set_title(f"Predicted labels\n{n_cluster} Clusters - ")
+    for i, known_clusters in enumerate(train_predictions[dataset_name].keys(), 0):
+        for j, dist_method in enumerate(train_predictions[dataset_name][known_clusters].keys(), 1):
+            index = i * len(train_predictions[dataset_name]['None'].keys()) + j
+            axs[index].scatter(feat0, feat1, c=train_predictions[dataset_name][known_clusters][dist_method]['ah_pred'], s=50, cmap='tab20')
+            axs[index].set_title(f"Predicted labels\n{known_clusters} Known Clusters\nDistance {dist_method}\nAccuracy {train_predictions[dataset_name][known_clusters][dist_method]['ah_acc']}")
     fig.suptitle(f'Dataset {dataset_name}', y=1.1)
     plt.show()
 
